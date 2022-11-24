@@ -114,6 +114,7 @@ func (p *Pull) Run(chartRef string) (string, error) {
 		}
 		c.Options = append(c.Options,
 			getter.WithRegistryClient(p.cfg.RegistryClient))
+		c.RegistryClient = p.cfg.RegistryClient
 	}
 
 	if p.Verify {
