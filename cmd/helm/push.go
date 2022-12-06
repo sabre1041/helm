@@ -17,14 +17,19 @@ limitations under the License.
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"helm.sh/helm/v3/cmd/helm/require"
 	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/cli/output"
 	"helm.sh/helm/v3/pkg/pusher"
+	"helm.sh/helm/v3/pkg/registry"
 )
 
 const pushDesc = `
@@ -34,8 +39,36 @@ If the chart has an associated provenance file,
 it will also be uploaded.
 `
 
+type pushPrinter struct {
+	Registry string   `json:"registry,omitempty"`
+	Digest   string   `json:"digest,omitempty"`
+	Comments []string `json:"comments,omitempty"`
+}
+
+func (p pushPrinter) WriteJSON(out io.Writer) error {
+	return output.EncodeJSON(out, p)
+}
+
+func (p pushPrinter) WriteYAML(out io.Writer) error {
+	return output.EncodeYAML(out, p)
+}
+
+func (s pushPrinter) WriteTable(out io.Writer) error {
+
+	fmt.Fprintf(out, "Pushed: %s\n", s.Registry)
+	fmt.Fprintf(out, "Digest: %s\n", s.Digest)
+
+	for _, c := range s.Comments {
+		fmt.Fprintf(out, "%s\n", c)
+	}
+
+	return nil
+
+}
+
 func newPushCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 	client := action.NewPushWithOpts(action.WithPushConfig(cfg))
+	var outfmt output.Format
 
 	cmd := &cobra.Command{
 		Use:   "push [chart] [remote]",
@@ -63,14 +96,45 @@ func newPushCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 			chartRef := args[0]
 			remote := args[1]
 			client.Settings = settings
-			output, err := client.Run(chartRef, remote)
+
+			// Capture the output
+			buf := new(bytes.Buffer)
+			registry.ClientOptWriter(buf)(cfg.RegistryClient)
+
+			_, err := client.Run(chartRef, remote)
+
 			if err != nil {
 				return err
 			}
-			fmt.Fprint(out, output)
-			return nil
+
+			pushPrinter := pushPrinter{
+				Comments: []string{},
+			}
+
+			scanner := bufio.NewScanner(buf)
+			for scanner.Scan() {
+				line := scanner.Text()
+				components := strings.SplitN(line, ":", 2)
+
+				if len(components) == 1 {
+					pushPrinter.Comments = append(pushPrinter.Comments, line)
+				} else {
+					switch components[0] {
+					case "Pushed":
+						pushPrinter.Registry = strings.TrimSpace(components[1])
+					case "Digest":
+						pushPrinter.Digest = strings.TrimSpace(components[1])
+					default:
+						pushPrinter.Comments = append(pushPrinter.Comments, strings.TrimSpace(components[1]))
+					}
+				}
+			}
+
+			return outfmt.Write(out, pushPrinter)
 		},
 	}
+
+	bindOutputFlag(cmd, &outfmt)
 
 	return cmd
 }
