@@ -330,10 +330,10 @@ func (c *Client) Pull(ref string, options ...PullOption) (*PullResult, error) {
 	for _, option := range options {
 		option(operation)
 	}
-	if !operation.withChart && !operation.withProv {
-		return nil, errors.New(
-			"must specify at least one layer to pull (chart/prov)")
-	}
+	// if !operation.withChart && !operation.withProv {
+	// 	return nil, errors.New(
+	// 		"must specify at least one layer to pull (chart/prov)")
+	// }
 	memoryStore := content.NewMemory()
 	allowedMediaTypes := []string{
 		ConfigMediaType,
@@ -471,8 +471,10 @@ func (c *Client) Pull(ref string, options ...PullOption) (*PullResult, error) {
 		}
 	}
 
-	fmt.Fprintf(c.out, "Pulled: %s\n", result.Ref)
-	fmt.Fprintf(c.out, "Digest: %s\n", result.Manifest.Digest)
+	if c.debug {
+		fmt.Fprintf(c.out, "Pulled: %s\n", result.Ref)
+		fmt.Fprintf(c.out, "Digest: %s\n", result.Manifest.Digest)
+	}
 
 	if strings.Contains(result.Ref, "_") {
 		fmt.Fprintf(c.out, "%s contains an underscore.\n", result.Ref)
@@ -657,6 +659,122 @@ func PushOptTest(test bool) PushOption {
 	return func(operation *pushOperation) {
 		operation.test = test
 	}
+}
+
+type (
+	// SearchOption allows specifying various settings on search
+	SearchOption func(*searchOperation)
+
+	searchOperation struct {
+		limit    int
+		version  string
+		versions bool
+	}
+
+	// SearchResult is the result returned upon successful search.
+	SearchResult struct {
+		Charts []*SearchResultChart `json:"charts"`
+	}
+
+	// SearchResultChart is the chart Instance .
+	SearchResultChart struct {
+		Reference string          `json:"reference"`
+		Chart     *chart.Metadata `json:"chart"`
+	}
+)
+
+func SearchOptLimit(limit int) SearchOption {
+	return func(operation *searchOperation) {
+		operation.limit = limit
+	}
+}
+
+func SearchOptVersion(version string) SearchOption {
+	return func(operation *searchOperation) {
+		operation.version = version
+	}
+}
+
+func SearchOptVersions(versions bool) SearchOption {
+	return func(operation *searchOperation) {
+		operation.versions = versions
+	}
+}
+
+func (c *Client) Search(ref string, options ...SearchOption) (*SearchResult, error) {
+
+	searchResult := &SearchResult{
+		Charts: []*SearchResultChart{},
+	}
+
+	operation := &searchOperation{}
+	for _, option := range options {
+		option(operation)
+	}
+
+	tags, err := c.Tags(ref)
+
+	if err != nil {
+		if !strings.Contains(err.Error(), "unexpected status code") && !strings.Contains(err.Error(), "could not load config with mediatype") {
+			return searchResult, err
+		} else {
+			if c.debug {
+				fmt.Fprintf(c.out, fmt.Sprintf("%s\n", err.Error()))
+			}
+			return searchResult, nil
+		}
+	}
+
+	var tagsToSearch []string
+
+	for _, val := range tags {
+		tag, err := GetTagMatchingVersionOrConstraint([]string{val}, operation.version)
+
+		if err == nil {
+			tagsToSearch = append(tagsToSearch, tag)
+		}
+
+	}
+
+	parsedReference, err := parseReference(ref)
+	if err != nil {
+		return searchResult, err
+	}
+
+	// Query Charts by tag
+	var pullOpts []PullOption
+	pullOpts = append(pullOpts,
+		PullOptWithChart(false),
+		PullOptWithProv(false))
+
+	for _, tag := range tagsToSearch {
+		targetRef := fmt.Sprintf("%s/%s:%s", parsedReference.Registry, parsedReference.Repository, tag)
+		result, err := c.Pull(targetRef, pullOpts...)
+		if err != nil {
+			if !strings.Contains(err.Error(), "unexpected status code") && !strings.Contains(err.Error(), "could not load config with mediatype") {
+				return searchResult, err
+			} else {
+				if c.debug {
+					fmt.Fprintf(c.out, fmt.Sprintf("%s\n", err.Error()))
+				}
+				continue
+			}
+		}
+
+		searchResult.Charts = append(searchResult.Charts, &SearchResultChart{
+			Reference: fmt.Sprintf("%s://%s/%s", OCIScheme, parsedReference.Registry, parsedReference.Repository),
+			Chart:     result.Chart.Meta,
+		})
+
+		// Limit the number of charts returned or
+		if len(searchResult.Charts) >= operation.limit || !operation.versions {
+			break
+		}
+
+	}
+
+	return searchResult, nil
+
 }
 
 // Tags provides a sorted list all semver compliant tags for a given repository

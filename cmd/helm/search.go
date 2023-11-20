@@ -37,6 +37,7 @@ func newSearchCmd(out io.Writer) *cobra.Command {
 	}
 
 	cmd.AddCommand(newSearchHubCmd(out))
+	cmd.AddCommand(newSearchRegistryCmd(out))
 	cmd.AddCommand(newSearchRepoCmd(out))
 
 	return cmd
